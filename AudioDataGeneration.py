@@ -34,67 +34,72 @@ def add_noise(signal, noise, fs, snr, signal_energy='rms'):
     return noisy_signal
 
 
-def datagenerator(In_path, Out_path, Noise_file, SNR, Num_audio_sample, sample_margin, Fs):
-    for index in range(Num_audio_sample):
-        # ** data for input **
-        Out_file_noisy = "Noisy_" + Noise_file + "_" + str(SNR) + "_dB_" + str(index + sample_margin)
-        Out_file_clean = "Clean_" + str(index + sample_margin)
-        clean, Fs = lr.load(In_path + '/Clean/Clean_' + str(index + sample_margin) + '.wav',
-                            sr=Fs)  # Downscale 48kHz to 16kHz
-        noise, Fs = lr.load(In_path + '/Different_Noise/' + Noise_file + '_noise.wav',
-                            sr=Fs)  # Downscale 48kHz to 16kHz
+#def datagenerator(In_path, Out_path, Noise_file, SNR, Num_audio_sample, sample_margin, Fs):
+def datagenerator(In_path, Out_path, noise_path: Path, SNR, Num_audio_sample, sample_margin, Fs):
+    """
+    noise_path: full Path to one .wav file in Different_Noise/
+    """
+    Noise_file = noise_path.stem   # e.g. "noise-free-sound-0001"
+    for i in range(Num_audio_sample):
+        # build the clean input path
+        clean_path = Path(In_path) / "Clean" / f"Clean_{i+sample_margin}.wav"
+        clean, _ = lr.load(str(clean_path), sr=Fs)
 
-        # x = y + Noise #Add noise
-        clean = SPL_cal(clean, 65)
-        noisy = add_noise(clean, noise, Fs, SNR, signal_energy='rms')
+        # load this specific noise file
+        noise, _ = lr.load(str(noise_path), sr=Fs)
+
+        # scale & mix
+        clean_scaled = SPL_cal(clean, 65)
+        try:
+            noisy = add_noise(clean_scaled, noise, Fs, SNR)
+        except ValueError:
+            print(f"Skipping noise {Noise_file}: too short")
+            continue
+            
         noisy = SPL_cal(noisy, 65)
-        sf.write(Out_path + '/Noisy/' + Out_file_noisy + ".wav", noisy, Fs)
-        sf.write(Out_path + '/Clean/' + Out_file_clean + ".wav", clean, Fs)
-        print(str(index))
+
+        # output paths
+        out_clean = Path(Out_path) / "Clean" / f"Clean_{i+sample_margin}.wav"
+        out_noisy = Path(Out_path) / "Noisy" / f"Noisy_{Noise_file}_{SNR}_dB_{i+sample_margin}.wav"
+
+        sf.write(str(out_clean), clean_scaled, Fs)
+        sf.write(str(out_noisy), noisy, Fs)
+        print(f"[{Noise_file} @ {SNR}dB] sample {i+sample_margin}")
 
 
 if __name__ == '__main__':
-    path = os.getcwd()
-    Data_path = path + '/Database/Original_Samples'
-    # Out_path = path + '/Database/Original_Samples'
-    Path(os.path.dirname(Data_path + '/Train/Clean/')).mkdir(parents=True, exist_ok=True)
-    Path(os.path.dirname(Data_path + '/Train/Noisy/')).mkdir(parents=True, exist_ok=True)
+    base = Path(os.getcwd()) / "Database" / "Original_Samples"
 
-    Path(os.path.dirname(Data_path + '/Dev/Clean/')).mkdir(parents=True, exist_ok=True)
-    Path(os.path.dirname(Data_path + '/Dev/Noisy/')).mkdir(parents=True, exist_ok=True)
+    # make output dirs (as you already do) …
+    for split in ("Train","Dev","Test"):
+        for sub in ("Clean","Noisy","Enhanced" if split=="Test" else "Noisy"):
+            (base / split / sub).mkdir(parents=True, exist_ok=True)
 
-    Path(os.path.dirname(Data_path + '/Test/Clean/')).mkdir(parents=True, exist_ok=True)
-    Path(os.path.dirname(Data_path + '/Test/Noisy/')).mkdir(parents=True, exist_ok=True)
-    Path(os.path.dirname(Data_path + '/Test/Enhanced/')).mkdir(parents=True, exist_ok=True)
-    # --------------------------------------  Train -------------------------------------------------------------------
     Fs = 16000
-    print("Started ....................")
-    Noise_type = ['Babble', 'Car']
-    SNR_all = [0, 5]  
-    Num_audio_sample = 10
-    sample_margin=1
-    for Noise_file in Noise_type:
-        for SNR in SNR_all:
-            datagenerator(Data_path, Data_path + '/Train/', Noise_file, SNR, Num_audio_sample,sample_margin, Fs)
-    print("Completed generating Train data ................... ")
 
+    # find every .wav under both subfolders
+    noise_dir = base / "Different_Noise"
+    noise_paths = sorted(noise_dir.rglob("*.wav"))
 
-    ##--------------------------------------  Dev -------------------------------------------------------------------
-    Noise_type = ['Babble', 'Car']
-    SNR_all = [0, 5]
-    Num_audio_sample = 5
-    sample_margin = 11 # As number of train sample was 10
-    for Noise_file in Noise_type:
-        for SNR in SNR_all:
-            datagenerator(Data_path, Data_path + '/Dev/', Noise_file, SNR, Num_audio_sample,sample_margin, Fs)
-    print("Completed generating Dev data ................... ")
+    # define your splits
+    splits = {
+      "Train": dict(snrs=[0,5],  n=10, margin=1),
+      "Dev":   dict(snrs=[0,5],  n=5,  margin=11),
+      "Test":  dict(snrs=[5,10], n=5,  margin=16),
+    }
 
-    ##--------------------------------------  Test --------------------------------------------------------------------
-    Noise_type = ['Babble', 'Car']
-    Num_audio_sample = 5
-    sample_margin = 16 # As number of train+ Dev sample was 15
-    SNR_all = [5, 10]
-    for Noise_file in Noise_type:
-        for SNR in SNR_all:
-            datagenerator(Data_path, Data_path + '/Test/', Noise_file, SNR, Num_audio_sample, sample_margin, Fs)
-    print("Completed generating Test data ................... ")
+    for split, cfg in splits.items():
+        out_path = base / split
+        print(f"--- Generating {split} ({cfg['n']} samples) ---")
+        for noise_path in noise_paths:
+            for snr in cfg["snrs"]:
+                datagenerator(
+                    In_path=str(base),
+                    Out_path=str(out_path),
+                    noise_path=noise_path,
+                    SNR=snr,
+                    Num_audio_sample=cfg["n"],
+                    sample_margin=cfg["margin"],
+                    Fs=Fs
+                )
+        print(f"Completed {split}.\n")
